@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "browser_public": [
+    "NEXT_PUBLIC_API_BASE_URL",
+    "NEXT_PUBLIC_CSRF_COOKIE_NAME"
+  ],
+  "render_runtime": [
+    "DATABASE_URL",
+    "LMS_ALLOWED_ORIGINS",
+    "LMS_CSRF_COOKIE",
+    "LMS_DB_ACQUIRE_TIMEOUT",
+    "LMS_DB_IDLE_TIMEOUT_MS",
+    "LMS_DB_LOCK_TIMEOUT_MS",
+    "LMS_DB_POOL_MAX",
+    "LMS_DB_POOL_MAX_WAITING",
+    "LMS_DB_STATEMENT_TIMEOUT_MS",
+    "LMS_ENVIRONMENT",
+    "LMS_LOGIN_RATE_LIMIT",
+    "LMS_MAX_BODY_BYTES",
+    "LMS_MUTATION_RATE_LIMIT",
+    "LMS_RATE_WINDOW_SECONDS",
+    "LMS_SESSION_ABSOLUTE_HOURS",
+    "LMS_SESSION_COOKIE",
+    "LMS_SESSION_IDLE_MINUTES",
+    "PYTHON_VERSION"
+  ],
+  "github_staging_secrets": [
+    "RENDER_DEPLOY_HOOK",
+    "STAGING_SMOKE_PASSWORD",
+    "SUPABASE_ACCESS_TOKEN",
+    "SUPABASE_DB_PASSWORD",
+    "VERCEL_ORG_ID",
+    "VERCEL_PROJECT_ID",
+    "VERCEL_TOKEN"
+  ],
+  "github_staging_variables": [
+    "STAGING_API_BASE_URL",
+    "STAGING_SMOKE_USERNAME",
+    "STAGING_WEB_BASE_URL",
+    "SUPABASE_PROJECT_REF"
+  ],
+  "github_backup_secrets": [
+    "STAGING_DATABASE_ADMIN_URL"
+  ],
+  "github_backup_variables": [
+    "BACKUP_AGE_RECIPIENT"
+  ],
+  "forbidden_in_browser": [
+    "DATABASE_URL",
+    "RENDER_DEPLOY_HOOK",
+    "STAGING_SMOKE_PASSWORD",
+    "STAGING_DATABASE_ADMIN_URL",
+    "SUPABASE_ACCESS_TOKEN",
+    "SUPABASE_DB_PASSWORD",
+    "VERCEL_ORG_ID",
+    "VERCEL_PROJECT_ID",
+    "VERCEL_TOKEN"
+  ]
+}

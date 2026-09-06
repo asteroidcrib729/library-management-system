@@ -1,0 +1,70 @@
+name: Backup staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_backup:
+        description: Type BACKUP-STAGING; this never targets production
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: library-management-staging-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Encrypt and retain staging backup
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 20
+    env:
+      BACKUP_AGE_RECIPIENT: ${{ vars.BACKUP_AGE_RECIPIENT }}
+      DATABASE_URL: ${{ secrets.STAGING_DATABASE_ADMIN_URL }}
+    steps:
+      - name: Require explicit staging confirmation
+        env:
+          CONFIRMATION: ${{ inputs.confirm_backup }}
+        run: test "$CONFIRMATION" = "BACKUP-STAGING"
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14.2"
+          cache: pip
+      - name: Install project and PostgreSQL client
+        run: |
+          python -m pip install --requirement requirements.txt --editable .
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+      - name: Install pinned age encryption tool
+        run: |
+          curl --fail --silent --show-error --location \
+            https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz \
+            --output "$RUNNER_TEMP/age.tar.gz"
+          echo "cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10  $RUNNER_TEMP/age.tar.gz" \
+            | sha256sum --check
+          tar --extract --gzip --file "$RUNNER_TEMP/age.tar.gz" --directory "$RUNNER_TEMP"
+      - name: Create, verify, and encrypt custom archive
+        run: |
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          plain="$RUNNER_TEMP/lms-staging-${stamp}.dump"
+          encrypted="${plain}.age"
+          python -m scripts.migrate_data backup --output "$plain" --environment staging
+          python -m scripts.migrate_data verify-backup --archive "$plain" --environment staging
+          "$RUNNER_TEMP/age/age" -r "$BACKUP_AGE_RECIPIENT" -o "$encrypted" "$plain"
+          sha256sum "$encrypted" > "${encrypted}.sha256"
+          rm --force "$plain"
+          echo "BACKUP_FILE=$encrypted" >> "$GITHUB_ENV"
+      - name: Upload encrypted, immutable staging recovery point
+        uses: actions/upload-artifact@v7
+        with:
+          name: lms-staging-backup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.BACKUP_FILE }}
+            ${{ env.BACKUP_FILE }}.sha256
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error

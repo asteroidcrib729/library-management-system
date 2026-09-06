@@ -1,0 +1,157 @@
+name: Deploy staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Full commit SHA that already has a successful CI check
+        required: true
+        type: string
+      confirm_staging:
+        description: Type DEPLOY-STAGING; this workflow never targets production
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  checks: read
+
+concurrency:
+  group: library-management-staging
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify exact commit and CI
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - name: Require explicit staging confirmation
+        env:
+          CONFIRMATION: ${{ inputs.confirm_staging }}
+        run: test "$CONFIRMATION" = "DEPLOY-STAGING"
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+      - id: commit
+        name: Resolve immutable release identity
+        env:
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+        run: |
+          resolved="$(git rev-parse HEAD)"
+          test "$resolved" = "$REQUESTED_SHA"
+          echo "sha=$resolved" >> "$GITHUB_OUTPUT"
+      - name: Require successful stable CI result
+        env:
+          DEPLOY_SHA: ${{ steps.commit.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${DEPLOY_SHA}/check-runs" \
+            --jq '[.check_runs[] | select(.name == "CI" and .conclusion == "success")] | length')"
+          test "$count" -ge 1
+
+  deploy:
+    name: Migrate, deploy, and verify staging
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 35
+    env:
+      DEPLOY_SHA: ${{ needs.verify.outputs.sha }}
+      RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+      STAGING_API_BASE_URL: ${{ vars.STAGING_API_BASE_URL }}
+      STAGING_SMOKE_PASSWORD: ${{ secrets.STAGING_SMOKE_PASSWORD }}
+      STAGING_SMOKE_USERNAME: ${{ vars.STAGING_SMOKE_USERNAME }}
+      STAGING_WEB_BASE_URL: ${{ vars.STAGING_WEB_BASE_URL }}
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14.2"
+          cache: pip
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install verification dependencies
+        run: python -m pip install --requirement requirements.txt --editable .
+      - name: Validate deployment contracts
+        run: python -m scripts.validate_deployment
+      - name: Link isolated Supabase staging project
+        run: npx --yes supabase@$(cat supabase/CLI_VERSION) link --project-ref "$SUPABASE_PROJECT_REF"
+      - name: Preview pending database migrations
+        run: npx --yes supabase@$(cat supabase/CLI_VERSION) db push --linked --dry-run
+      - name: Apply committed database migrations
+        run: npx --yes supabase@$(cat supabase/CLI_VERSION) db push --linked --yes
+      - name: Trigger exact-commit Render deployment
+        run: |
+          separator="?"
+          [[ "$RENDER_DEPLOY_HOOK" == *"?"* ]] && separator="&"
+          curl --fail --silent --show-error --request POST \
+            "${RENDER_DEPLOY_HOOK}${separator}ref=${DEPLOY_SHA}" \
+            --output "$RUNNER_TEMP/render-deploy.json"
+          jq -r '"Render deploy: " + (.deploy.id // .id // "accepted")' \
+            "$RUNNER_TEMP/render-deploy.json"
+      - name: Wait for matching API readiness
+        run: |
+          for attempt in $(seq 1 90); do
+            live="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              --max-time 10 "${STAGING_API_BASE_URL}/health/live" || true)"
+            ready="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              --max-time 10 "${STAGING_API_BASE_URL}/health/ready" || true)"
+            if [[ "$live" == "200" && "$ready" == "200" ]]; then exit 0; fi
+            sleep 10
+          done
+          echo "API did not become ready within 15 minutes." >&2
+          exit 1
+      - name: Install locked dashboard dependencies
+        working-directory: web
+        run: npm ci
+      - name: Pull isolated Vercel staging configuration
+        working-directory: web
+        run: npx --yes vercel@59.11.7 pull --yes --environment=production --token="$VERCEL_TOKEN"
+      - name: Build staging dashboard
+        working-directory: web
+        run: npx --yes vercel@59.11.7 build --prod --token="$VERCEL_TOKEN"
+      - name: Deploy staging dashboard
+        working-directory: web
+        run: |
+          npx --yes vercel@59.11.7 deploy --prebuilt --prod --token="$VERCEL_TOKEN" \
+            > "$RUNNER_TEMP/vercel-url.txt"
+          sed 's#^#Vercel deploy: #' "$RUNNER_TEMP/vercel-url.txt"
+      - name: Run credentialed smoke and browser-boundary checks
+        run: |
+          python -m scripts.deployment_probe smoke \
+            --api-origin "$STAGING_API_BASE_URL" \
+            --web-origin "$STAGING_WEB_BASE_URL" \
+            --username-environment STAGING_SMOKE_USERNAME \
+            --password-environment STAGING_SMOKE_PASSWORD \
+            --output "$RUNNER_TEMP/smoke.json"
+      - name: Record redacted release evidence
+        run: |
+          python -m scripts.deployment_probe measure \
+            --api-origin "$STAGING_API_BASE_URL" \
+            --web-origin "$STAGING_WEB_BASE_URL" \
+            --samples 25 \
+            --output "$RUNNER_TEMP/measurement.json"
+          jq -n \
+            --arg commit "$DEPLOY_SHA" \
+            --arg render "$(jq -r '.deploy.id // .id // "unknown"' "$RUNNER_TEMP/render-deploy.json")" \
+            --arg vercel "$(tail -n 1 "$RUNNER_TEMP/vercel-url.txt")" \
+            --slurpfile smoke "$RUNNER_TEMP/smoke.json" \
+            --slurpfile measurement "$RUNNER_TEMP/measurement.json" \
+            '{commit: $commit, render_deploy: $render, vercel_deploy: $vercel,
+              smoke: $smoke[0], measurement: $measurement[0]}' \
+            > "$RUNNER_TEMP/staging-release.json"
+          jq . "$RUNNER_TEMP/staging-release.json"

@@ -1,0 +1,47 @@
+.venv/
+.lms/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.pyrefly/
+build/
+dist/
+*.egg-info/
+coverage.xml
+.coverage
+
+# Environment and secret files
+.env
+.env.*
+!.env.example
+!**/.env.local.example
+
+# JavaScript and Next.js
+node_modules/
+.next/
+.vercel/
+out/
+*.tsbuildinfo
+npm-debug.log*
+
+# Supabase local state and database artifacts
+supabase/.branches/
+supabase/.temp/
+*.db
+*.db-shm
+*.db-wal
+*.dump
+*.age
+*.sqlite3
+*.backup
+*.sql.gz
+
+# Local orchestration and test artifacts
+.dev-processes/
+playwright-report/
+test-results/
+htmlcov/
+
+# Legacy runtime data (may contain account or personal records)
+legacy/*.txt
