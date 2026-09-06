@@ -1,0 +1,60 @@
+# yaml-language-server: $schema=https://render.com/schema/render.yaml.json
+services:
+  - type: web
+    name: library-management-api-staging
+    runtime: python
+    plan: free
+    autoDeployTrigger: off
+    numInstances: 1
+    buildCommand: python -m pip install --requirement requirements.txt --editable .
+    startCommand: python -m uvicorn library_management.api.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health/live
+    maxShutdownDelaySeconds: 30
+    buildFilter:
+      paths:
+        - src/**
+        - pyproject.toml
+        - requirements.txt
+        - .python-version
+        - render.yaml
+      ignoredPaths:
+        - web/**
+        - development-plans/**
+        - legacy/**
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.14.2"
+      - key: LMS_ENVIRONMENT
+        value: "staging"
+      - key: LMS_ALLOWED_ORIGINS
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: LMS_SESSION_COOKIE
+        value: "lms_session"
+      - key: LMS_CSRF_COOKIE
+        value: "lms_csrf"
+      - key: LMS_SESSION_IDLE_MINUTES
+        value: "30"
+      - key: LMS_SESSION_ABSOLUTE_HOURS
+        value: "12"
+      - key: LMS_LOGIN_RATE_LIMIT
+        value: "5"
+      - key: LMS_MUTATION_RATE_LIMIT
+        value: "120"
+      - key: LMS_RATE_WINDOW_SECONDS
+        value: "60"
+      - key: LMS_MAX_BODY_BYTES
+        value: "65536"
+      - key: LMS_DB_POOL_MAX
+        value: "5"
+      - key: LMS_DB_POOL_MAX_WAITING
+        value: "10"
+      - key: LMS_DB_ACQUIRE_TIMEOUT
+        value: "2"
+      - key: LMS_DB_LOCK_TIMEOUT_MS
+        value: "2000"
+      - key: LMS_DB_STATEMENT_TIMEOUT_MS
+        value: "5000"
+      - key: LMS_DB_IDLE_TIMEOUT_MS
+        value: "10000"

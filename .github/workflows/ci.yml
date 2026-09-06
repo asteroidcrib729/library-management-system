@@ -1,0 +1,166 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.classify.outputs.backend }}
+      database: ${{ steps.classify.outputs.database }}
+      contract: ${{ steps.classify.outputs.contract }}
+      frontend: ${{ steps.classify.outputs.frontend }}
+      docs: ${{ steps.classify.outputs.docs }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - id: classify
+        name: Select component checks
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          if [[ -n "$BASE_SHA" && -n "$HEAD_SHA" ]]; then
+            python scripts/classify_changes.py --base "$BASE_SHA" --head "$HEAD_SHA" --github-output "$GITHUB_OUTPUT"
+          else
+            python scripts/classify_changes.py --github-output "$GITHUB_OUTPUT"
+          fi
+
+  backend:
+    name: Python backend
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: python -m pip install --requirement requirements.txt --editable .
+      - run: python -m ruff check .
+      - run: python -m ruff format --check .
+      - run: python -m pytest
+      - run: python -m pyrefly check
+      - run: python -m scripts.export_openapi --check
+      - run: python -m scripts.validate_deployment
+
+  contract:
+    name: API contract
+    needs: changes
+    if: needs.changes.outputs.contract == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: python -m pip install --requirement requirements.txt --editable .
+      - run: python -m scripts.export_openapi --check
+      - run: npm ci
+        working-directory: web
+      - run: npm run check:api
+        working-directory: web
+
+  frontend:
+    name: Next.js frontend
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run check
+        working-directory: web
+
+  database:
+    name: Local PostgreSQL
+    needs: changes
+    if: needs.changes.outputs.database == 'true' || needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Start local Supabase/PostgreSQL stack
+        run: npx --yes supabase@$(cat supabase/CLI_VERSION) start
+      - name: Reset migrations and synthetic seed
+        run: npx --yes supabase@$(cat supabase/CLI_VERSION) db reset
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: python -m pip install --requirement requirements.txt --editable .
+      - name: PostgreSQL constraints and concurrency
+        env:
+          LMS_TEST_POSTGRES_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:55432/postgres
+          LMS_TEST_POSTGRES_CONTAINER: supabase_db_library-management-system
+        run: python -m pytest tests/postgres -q
+
+  docs:
+    name: Documentation hygiene
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify plan naming and whitespace
+        shell: pwsh
+        run: |
+          $invalid = Get-ChildItem development-plans -File | Where-Object Name -NotMatch '^development-plan-\d{2}\.md$'
+          if ($invalid) { throw "Invalid development plan filename: $($invalid.Name -join ', ')" }
+          git diff-tree --check --root HEAD
+
+  ci:
+    name: CI
+    if: always()
+    needs: [changes, backend, contract, frontend, database, docs]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all selected jobs to pass
+        shell: bash
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          CONTRACT_RESULT: ${{ needs.contract.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          DATABASE_RESULT: ${{ needs.database.result }}
+          DOCS_RESULT: ${{ needs.docs.result }}
+        run: |
+          if [[ "$CHANGES_RESULT" != "success" ]]; then
+            echo "Change classification did not succeed."
+            exit 1
+          fi
+          for result in "$BACKEND_RESULT" "$CONTRACT_RESULT" "$FRONTEND_RESULT" "$DATABASE_RESULT" "$DOCS_RESULT"; do
+            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+              echo "A selected component job ended with: $result"
+              exit 1
+            fi
+          done
+          echo "All selected component jobs passed."
